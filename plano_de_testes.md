@@ -1,131 +1,104 @@
-# Plano de Testes - OWASP Juice Shop
+# Plano de Testes — OWASP Juice Shop com Agente Supervisionado
 
 ## 1. Escopo
 
-Este plano de testes define as investigacoes de seguranca a serem realizadas contra uma instancia local do OWASP Juice Shop (http://localhost:3000), utilizando um agente supervisionado integrado com LLM local (qwen3:4b via Ollama).
+Este documento define o planejamento das investigações de segurança contra a instância local controlada do **OWASP Juice Shop** (`http://localhost:3000`), utilizando o agente supervisionado [`agent.py`](agent.py) integrado ao modelo de linguagem local `qwen3:4b` via Ollama.
+
+Conforme os requisitos da Avaliação Final, todos os testes permanecem estritamente restritos à instância local do Juice Shop, sendo proibido executar ações contra serviços externos ou equipamentos de outros grupos.
 
 ## 2. Objetivo Geral
 
-Avaliar a postura de seguranca do Juice Shop atraves de tres investigacoes distintas, documentando o processo de decisao do agente de IA e a intervencao humana necessaria.
+Avaliar de forma controlada três frentes distintas de segurança da aplicação, investigando em quais situações o modelo local contribui na formulação de próximos passos e interpretação de resultados, onde apresenta limitações ou erros, e em quais momentos a intervenção humana é indispensável.
+
+> Uma hipótese rejeitada com base em evidências verificáveis também constitui resultado técnico válido.
 
 ## 3. Ambiente de Testes
 
-| Componente | Detalhes |
+| Componente | Especificação |
 |---|---|
-| Alvo | OWASP Juice Shop (Docker: bkimminich/juice-shop) |
-| Endereco | http://localhost:3000 |
-| LLM | qwen3:4b via Ollama (localhost:11434) |
-| Ferramentas | nmap, requests (Python), dir_bruteforce customizado |
-| SO | Ubuntu Linux |
-| Isolamento | Todos os testes sao exclusivamente locais |
+| Alvo | OWASP Juice Shop (`bkimminich/juice-shop` em Docker, `http://localhost:3000`) |
+| Modelo local (LLM) | `qwen3:4b` (Q4_K_M) via Ollama (`http://localhost:11434`) |
+| Ferramentas integradas | `nmap_scan` (porta `3000`), `http_request`, `dir_bruteforce` (com filtro SPA) |
+| Ambiente de execução | Kit Ubuntu 22.04.5 (`kit08`), Python 3.10+, execução estritamente local |
+| Restauração de estado | `docker restart juice-shop` (ou recriação do container) antes de cada experimento |
 
-## 4. Investigacoes Planejadas
+---
 
-### 4.1 Investigacao 1: Reconhecimento e Enumeracao
+## 4. Planejamento Inicial do Grupo (sem apoio do LLM)
 
-**Hipotese**: O Juice Shop expoe servicos e endpoints desnecessarios que podem ser descobertos por atacantes.
+Seguindo a Seção 3 do roteiro, esta estratégia inicial foi definida pelo grupo **antes** de consultar o modelo local.
 
-**Estrategia**:
-1. Executar nmap contra localhost para identificar todas as portas abertas e servicos
-2. Realizar forca bruta de diretorios para descobrir endpoints ocultos
-3. Acessar endpoints descobertos para avaliar informacoes expostas
+### 4.1 Investigação 1 — Reconhecimento e Enumeração da Aplicação
 
-**Ferramentas**:
-- `nmap_scan`: Varredura de portas e deteccao de servicos
-- `dir_bruteforce`: Descoberta de endpoints ocultos
-- `http_request`: Acesso e analise de endpoints encontrados
+- **Aspectos da aplicação investigados:** superfície de ataque HTTP em `localhost:3000`, cabeçalhos de resposta, rotas administrativas, arquivos informativos e endpoints REST expostos sem autenticação.
+- **Hipótese inicial:** o Juice Shop expõe endpoints, arquivos ou APIs internas acessíveis sem autenticação que revelam informações sensíveis sobre a arquitetura, desafios ou dados da aplicação.
+- **Estratégia proposta e ferramentas:**
+  1. Confirmar disponibilidade e banner do serviço na porta `3000` com `nmap_scan` (`target_host="localhost"`, `ports="3000"`, `-sV`).
+  2. Inspecionar cabeçalhos e HTML inicial com `http_request` (`GET /`).
+  3. Enumerar rotas e APIs com `dir_bruteforce`, filtrando o fallback `index.html` da SPA Angular para distinguir rotas reais de rotas falsas retornando `200 OK`.
+  4. Consultar individualmente com `http_request` os endpoints não triviais retornados (ex.: `/metrics`, `/ftp`, `/api-docs`, `/robots.txt`, `/api/Challenges`, `/rest/memories`, `/api/SecurityQuestions`) e verificar quais exigem autenticação (`401`/`403`).
+- **Evidências necessárias:** saída do `nmap_scan` na porta `3000`; lista de endpoints filtrados por `status_code`, `size` e `content_type`; trechos reais do corpo e cabeçalhos HTTP dos endpoints acessados sem credenciais.
 
-**Evidencias Necessarias**:
-- Lista completa de portas abertas e servicos
-- Endpoints acessiveis que nao deveriam ser publicos
-- Informacoes sensiveis expostas (APIs administrativas, dados de debug, etc.)
+### 4.2 Investigação 2 — Mecanismos de Autenticação e Autorização
 
-**Criterios de Sucesso**:
-- Identificar pelo menos 3 endpoints nao obvios
-- Encontrar pelo menos 1 endpoint com informacoes sensiveis
+- **Aspectos da aplicação investigados:** endpoint de autenticação (`/rest/user/login`), tratamento de erro com credenciais inválidas, resistência a SQL Injection e controle de autorização em endpoints protegidos.
+- **Hipótese inicial:** o mecanismo de login não sanitiza adequadamente os parâmetros enviados ao banco SQLite, permitindo contornar a autenticação sem conhecer a senha e acessar recursos restritos com o token obtido.
+- **Estratégia proposta e ferramentas:**
+  1. Estabelecer baseline funcional via `http_request` (`POST /rest/user/login` com credenciais inválidas, verificando código `401` e mensagem padrão).
+  2. Testar variações simples de SQL Injection no campo `email` (ex.: `' OR 1=1--`, `admin@juice-sh.op'--`, `' OR '1'='1'--`) observando diferenças de status HTTP, mensagens de erro SQL ou emissão de token JWT.
+  3. Caso um token seja emitido, inspecionar os dados retornados e validar se o token realmente concede acesso a um endpoint autenticado (ex.: `/rest/user/whoami` ou `/api/Users`) via `http_request` com header `Authorization: Bearer ...`.
+- **Evidências necessárias:** resposta HTTP da linha de base (`401`); requisição e resposta completa de qualquer payload que altere o comportamento ou retorne JWT; prova de acesso a recurso protegido utilizando o token obtido (ou prova de bloqueio caso a hipótese não se confirme).
 
-### 4.2 Investigacao 2: Bypass de Autenticacao via SQL Injection
+### 4.3 Investigação 3 — Tratamento de Entradas, Requisições e Acesso a Recursos
 
-**Hipotese**: O formulario de login do Juice Shop e vulneravel a SQL Injection, permitindo bypass de autenticacao.
+- **Aspectos da aplicação investigados:** tratamento de entradas de usuário em endpoints de API (`GET /rest/products/search?q=...`, `POST /api/Feedbacks`, `GET /rest/track-order/...`) e distinção entre validação/erros de backend versus execução client-side (DOM).
+- **Hipótese inicial:** entradas enviadas via parâmetros de consulta e payloads JSON não passam por validação ou escapamento adequado, permitindo identificar injeção no backend ou reflexão insegura nas respostas HTTP (respeitando a fronteira de que o agente não executa JavaScript em navegador).
+- **Estratégia proposta e ferramentas:**
+  1. Estabelecer baseline em `/rest/products/search?q=apple` com `http_request` (`200 OK`, `application/json`).
+  2. Testar caracteres especiais e payloads de injeção/HTML no parâmetro `q` (`<script>...`, `'`, `"`) observando se há reflexão sem escapamento em resposta HTML/JSON ou vazamento de erros SQL/stack traces (`500`).
+  3. Investigar o comportamento de `POST /api/Feedbacks` (incluindo obtenção prévia de `/rest/captcha` se necessário) e a consulta direta à API `/rest/track-order/{id}` para testar controle de acesso/tratamento de entrada sem confundir com rotas com fragmento `#` (como `/#/track-result`, que não trafegam em requisições HTTP).
+- **Evidências necessárias:** status HTTP, `Content-Type` e corpo das respostas comparando entradas benignas e malformadas; registro explícito da impossibilidade de validar execução real de DOM XSS apenas via `http_request` (sem browser).
 
-**Estrategia**:
-1. Compreender o mecanismo de login (endpoint, formato de dados)
-2. Testar login com credenciais invalidas para observar comportamento normal
-3. Testar payloads classicos de SQL Injection no campo de email
-4. Verificar se a injecao permite acesso nao autorizado
+---
 
-**Ferramentas**:
-- `http_request`: Envio de requisicoes POST com payloads de SQLi
+## 5. Revisão do Planejamento com Apoio do LLM Local (`qwen3:4b`)
 
-**Payloads Planejados**:
-- `' OR 1=1--`
-- `' OR '1'='1`
-- `admin'--`
-- `' UNION SELECT * FROM Users--`
+*[Seção a ser executada e preenchida na etapa seguinte, submetendo a Seção 4 ao `qwen3:4b` via Ollama para revisar o plano.]*
 
-**Evidencias Necessarias**:
-- Resposta de erro normal (credenciais invalidas)
-- Resposta diferente com payload SQLi (indicando vulnerabilidade)
-- Token de autenticacao retornado sem credenciais validas
+### 5.1 Prompt utilizado na revisão
 
-**Criterios de Sucesso**:
-- Demonstrar que SQL Injection e possivel no campo de login
-- Obter acesso como administrador sem conhecer a senha
+> `[Preencher com o prompt enviado ao qwen3:4b após o plano inicial do grupo]`
 
-### 4.3 Investigacao 3: Cross-Site Scripting (XSS)
+### 5.2 Decisões do grupo sobre as sugestões do modelo
 
-**Hipotese**: Campos de entrada do Juice Shop sao vulneraveis a XSS, permitindo injecao de scripts maliciosos.
+| Investigação | Sugestão do `qwen3:4b` | Decisão | Justificativa técnica do grupo |
+|---|---|---|---|
+| Reconhecimento | `[A preencher]` | `[Aceita / Modificada / Rejeitada]` | `[A preencher]` |
+| Autenticação | `[A preencher]` | `[Aceita / Modificada / Rejeitada]` | `[A preencher]` |
+| Tratamento de entradas | `[A preencher]` | `[Aceita / Modificada / Rejeitada]` | `[A preencher]` |
 
-**Estrategia**:
-1. Identificar campos de entrada (busca, feedback, tracking)
-2. Testar payloads XSS basicos nos campos identificados
-3. Verificar se os payloads sao refletidos sem sanitizacao
-4. Documentar quais campos sao vulneraveis e quais tipos de XSS
+---
 
-**Ferramentas**:
-- `http_request`: Envio de payloads XSS via GET e POST
+## 6. Metodologia do Agente Supervisionado e Critérios de Parada
 
-**Payloads Planejados**:
-- `<script>alert('xss')</script>`
-- `<img src=x onerror=alert('xss')>`
-- `<iframe src="javascript:alert('xss')">`
-- `<svg onload=alert('xss')>`
+Para cada investigação, o agente executa o ciclo interativo:
+1. O objetivo aberto (hipótese + escopo) é passado ao `agent.py`.
+2. O LLM analisa o histórico recente (até 8 turnos) e propõe uma ação em JSON (`interpretation`, `action`, `tool`, `parameters`, `reasoning`).
+3. O operador decide explicitamente: `s` (aprovar), `n` (rejeitar informando o motivo ao LLM), `m` (modificar parâmetros em JSON) ou `q` (encerrar). Entradas inválidas não aprovam ações automaticamente.
+4. O guard `check_scope()` valida novamente a ação (mesmo após `m`) contra o escopo estrito de `http://localhost:3000`.
+5. Quando autorizada e dentro do escopo, a ferramenta executa e o operador pode registrar uma nota (`operator_note`), que retorna ao modelo junto ao resultado.
 
-**Endpoints Alvo**:
-- `/rest/products/search?q=PAYLOAD` (busca de produtos)
-- `/api/Feedbacks` (formulario de feedback)
-- `/#/track-result?id=PAYLOAD` (rastreamento de pedidos)
+**Critérios de parada:**
+- O modelo retorna `"action": "DONE"` com conclusão fundamentada em evidências observadas e avaliação final do operador;
+- O operador encerra manualmente com `q` (ou `Ctrl+C`);
+- Limite de **10 ações executadas** por investigação (com síntese final obrigatória baseada apenas nas evidências já coletadas).
 
-**Evidencias Necessarias**:
-- Payload XSS refletido sem escapamento na resposta
-- Payload armazenado em campo persistente (Stored XSS)
+## 7. Esquema de Registro das Execuções
 
-**Criterios de Sucesso**:
-- Encontrar pelo menos 1 endpoint vulneravel a XSS
-- Demonstrar reflected e/ou stored XSS
-
-## 5. Metodologia do Agente
-
-Para cada investigacao:
-1. O objetivo e passado ao agente
-2. O LLM analisa o contexto e propoe uma acao
-3. A acao e autorizada (modo automatico ou manual)
-4. A ferramenta executa e retorna resultados
-5. O LLM interpreta os resultados e decide o proximo passo
-6. O ciclo continua ate a conclusao ou limite de passos
-
-## 6. Criterios de Parada
-
-- Investigacao concluida: evidencias suficientes coletadas
-- Limite de passos atingido (8 passos por investigacao)
-- LLM determina que nao ha mais acoes produtivas
-
-## 7. Registro e Documentacao
-
-Todas as acoes sao registradas em JSON com:
-- Timestamp
-- Acao proposta pelo agente
-- Ferramenta e parametros
-- Decisao de autorizacao
-- Resultado da execucao
-- Interpretacao do LLM
+Todos os logs em `logs/<investigacao>_<timestamp>.json` armazenam, para cada passo:
+- Ação proposta e justificativa (`action_proposed`, `reasoning`);
+- Ferramenta e parâmetros propostos vs. executados (`tool`, `proposed_parameters`, `parameters`);
+- Decisão de supervisão ou bloqueio (`authorization_decision`, `rejection_reason`);
+- Resultado real da ferramenta (`result`);
+- Interpretação do modelo (`llm_interpretation`);
+- Análise/decisão do grupo após observar o resultado (`operator_note`).
