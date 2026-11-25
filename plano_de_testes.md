@@ -63,19 +63,25 @@ Seguindo a Seção 3 do roteiro, esta estratégia inicial foi definida pelo grup
 
 ## 5. Revisão do Planejamento com Apoio do LLM Local (`qwen3:4b`)
 
-*[Seção a ser executada e preenchida na etapa seguinte, submetendo a Seção 4 ao `qwen3:4b` via Ollama para revisar o plano.]*
+Após o registro da Seção 4 (elaborada sem apoio do LLM), o planejamento inicial foi submetido ao modelo local `qwen3:4b` via Ollama (`format="json"`), gerando o registro completo em [`logs/revisao_plano_llm_20261124_210227.json`](logs/revisao_plano_llm_20261124_210227.json) (duração de `67,92 s`, `1.562` tokens de entrada e `650` tokens de saída). A resposta do modelo truncou no último item de `tratamento_de_entradas` (`response_parsed: null`), documentando desde o planejamento uma limitação prática de geração estruturada do modelo 4B; todas as sugestões legíveis foram extraídas e avaliadas tecnicamente pelo grupo.
 
 ### 5.1 Prompt utilizado na revisão
 
-> `[Preencher com o prompt enviado ao qwen3:4b após o plano inicial do grupo]`
+> Voce e um revisor critico de testes de seguranca web. Leia o plano inicial do grupo abaixo (OWASP Juice Shop em `http://localhost:3000`; ferramentas do agente: `nmap_scan` porta 3000, `http_request` sem redirect/browser, `dir_bruteforce` com filtro SPA).  
+> IMPORTANTE: NAO repita nem resuma o que ja esta escrito no plano. Sugira APENAS testes alternativos NOVOS, aspectos nao considerados ou possiveis falsos positivos que estao FALTANDO no plano.  
+> Retorne um JSON valido em portugues no formato exato: `{"reconhecimento": {"novas_sugestoes": [...], "lacunas_ou_falsos_positivos": [...]}, "autenticacao": {...}, "tratamento_de_entradas": {...}}` *(seguido integralmente pelo texto da Seção 4 acima).*
 
 ### 5.2 Decisões do grupo sobre as sugestões do modelo
 
-| Investigação | Sugestão do `qwen3:4b` | Decisão | Justificativa técnica do grupo |
+| Investigação | Sugestão / alerta do `qwen3:4b` | Decisão | Justificativa técnica do grupo |
 |---|---|---|---|
-| Reconhecimento | `[A preencher]` | `[Aceita / Modificada / Rejeitada]` | `[A preencher]` |
-| Autenticação | `[A preencher]` | `[Aceita / Modificada / Rejeitada]` | `[A preencher]` |
-| Tratamento de entradas | `[A preencher]` | `[Aceita / Modificada / Rejeitada]` | `[A preencher]` |
+| Reconhecimento | Testar endpoints de métricas/saúde, analisar cabeçalhos de resposta (`X-Powered-By`, `Server`, `X-Auth-Token`, `Set-Cookie`) e alertar sobre rotas SPA retornando `200 OK` como falsos positivos. | **Aceita** | Reforçou a priorização de `/metrics`, a leitura sistemática de cabeçalhos e a manutenção do filtro SHA-256 em `dir_bruteforce()` contra o fallback `index.html` (`9.984 B`). |
+| Reconhecimento | Buscar arquivos genéricos de configuração (`config.json`, `app.js`) via `dir_bruteforce`. | **Modificada** | Mantida a wordlist curada de 62 rotas voltadas ao OWASP Juice Shop (incluindo `/metrics`, `/ftp`, `/encryptionkeys`, `/robots.txt`, `/api-docs` e APIs REST), evitando desperdício do teto de 200 caminhos com nomes genéricos. |
+| Autenticação | Inspecionar propriedades do JWT emitido (assinatura, expiração, papel/claims) e verificar tokens/cookies expostos. | **Aceita** | Incorporado o exame dos metadados retornados no corpo JSON do login, com redação do token bruto (`[REDACTED_JWT]`) nas cópias públicas de log e relatório. |
+| Autenticação | Executar ataques de força bruta de senhas comuns contra `/rest/user/login`. | **Rejeitada** | Desvia da hipótese principal de SQL Injection e consumiria rapidamente o orçamento supervisionado de 10 ações com tráfego ruidoso sem ganho investigativo. |
+| Autenticação | Tratar retornos `401` ou `403` como possíveis falsos positivos de detecção de autenticação. | **Modificada** | Consolidado o retorno `401 Invalid email or password.` como linha de base obrigatória de controle para demonstrar de forma objetiva a transição `401 → 200` sob payload SQLi. |
+| Tratamento de entradas | Testar injeção de SQL e caracteres especiais em parâmetros de URL (`?q=...`) de endpoints sem autenticação (`/rest/products/search`). | **Aceita** | Confirmou `GET /rest/products/search?q=...` como superfície read-only principal para confrontar payloads SQLi e HTML de forma controlada. |
+| Tratamento de entradas | Testar SQLi em campos persistentes de comentários e descrições de produtos (saída truncada no item final de falsos positivos). | **Rejeitada** | Rotas como `POST /api/Feedbacks` exigem resolução de CAPTCHA e alteram estado persistente da aplicação; priorizou-se inicialmente a API de busca não destrutiva. |
 
 ---
 
